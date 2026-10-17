@@ -1,0 +1,279 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    html, body, cast-media-player, #youtube-player {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      background: #000;
+    }
+
+    #youtube-player {
+      z-index: 2;
+    }
+
+    #youtube-player[hidden] {
+      display: none;
+    }
+
+    #receiver-status {
+      position: fixed;
+      z-index: 3;
+      inset: auto 0 10%;
+      color: #fff;
+      font: 16px system-ui, sans-serif;
+      text-align: center;
+      text-shadow: 0 1px 4px #000;
+    }
+  </style>
+  <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+</head>
+<body>
+  <cast-media-player></cast-media-player>
+  <div id="youtube-player" hidden></div>
+  <div id="receiver-status">Waiting for Pocket Player…</div>
+  <script>
+    (() => {
+      const namespace = "urn:x-cast:com.pocketplayer.youtube";
+      const context = cast.framework.CastReceiverContext.getInstance();
+      const playerManager = context.getPlayerManager();
+      const playerElement = document.getElementById("youtube-player");
+      const statusElement = document.getElementById("receiver-status");
+      let youtubePlayer;
+      let pendingVideoID;
+      let currentVideoID;
+      let activeSenderID;
+      let playerLoadTimeout;
+      let playbackStartTimeout;
+
+      function sendStatus(type, message) {
+        if (!activeSenderID) return;
+        const response = { type };
+        if (message) response.message = message;
+        context.sendCustomMessage(namespace, activeSenderID, response);
+      }
+
+      function showStatus(message) {
+        statusElement.textContent = message;
+        statusElement.hidden = false;
+      }
+
+      function reportPlayerState() {
+        if (!youtubePlayer || !activeSenderID || !window.YT) return;
+        const state = youtubePlayer.getPlayerState();
+        const playerState = state === YT.PlayerState.PLAYING ? "PLAYING" :
+          state === YT.PlayerState.PAUSED ? "PAUSED" :
+          state === YT.PlayerState.ENDED ? "ENDED" :
+          state === YT.PlayerState.UNSTARTED ? "STOPPED" : "BUFFERING";
+        context.sendCustomMessage(namespace, activeSenderID, {
+          type: "STATE",
+          playerState,
+          currentTime: youtubePlayer.getCurrentTime() || 0,
+          duration: youtubePlayer.getDuration() || 0
+        });
+      }
+
+      function handlePlaybackCommand(message) {
+        if (!youtubePlayer) {
+          sendStatus("ERROR", "Load a YouTube video before controlling playback.");
+          return;
+        }
+
+        switch (message.type) {
+        case "PLAY":
+          youtubePlayer.playVideo();
+          break;
+        case "PAUSE":
+          youtubePlayer.pauseVideo();
+          break;
+        case "STOP":
+          youtubePlayer.stopVideo();
+          break;
+        case "SEEK":
+          if (typeof message.seconds !== "number" || !Number.isFinite(message.seconds)) {
+            sendStatus("ERROR", "The seek position was invalid.");
+            return;
+          }
+          youtubePlayer.seekTo(message.seconds, true);
+          break;
+        default:
+          return false;
+        }
+        reportPlayerState();
+        return true;
+      }
+
+      function playYouTubeVideo(videoID, senderID) {
+        activeSenderID = senderID;
+
+        // A sender reconnecting (e.g. phone unlock) re-sends the same load request.
+        // Keep the current playback instead of restarting from the beginning.
+        if (youtubePlayer && currentVideoID === videoID && window.YT) {
+          const state = youtubePlayer.getPlayerState();
+          if (state === YT.PlayerState.PLAYING || state === YT.PlayerState.PAUSED ||
+              state === YT.PlayerState.BUFFERING) {
+            sendStatus("RECEIVED");
+            if (state === YT.PlayerState.PLAYING) sendStatus("PLAYING");
+            reportPlayerState();
+            return;
+          }
+        }
+
+        pendingVideoID = videoID;
+        currentVideoID = videoID;
+        showStatus("Loading YouTube video…");
+        sendStatus("RECEIVED");
+        playerManager.stop();
+        playerElement.hidden = false;
+
+        if (!window.YT || !window.YT.Player) {
+          showStatus("Loading YouTube player API…");
+          sendStatus("LOADING_PLAYER");
+          clearTimeout(playerLoadTimeout);
+          playerLoadTimeout = setTimeout(() => {
+            if (pendingVideoID) {
+              const message = "The YouTube player API did not load on the TV. Check the TV's internet connection.";
+              showStatus(message);
+              sendStatus("ERROR", message);
+            }
+          }, 15000);
+          return;
+        }
+        clearTimeout(playerLoadTimeout);
+
+        showStatus("Creating YouTube player…");
+        clearTimeout(playbackStartTimeout);
+        playbackStartTimeout = setTimeout(() => {
+          const message = "The YouTube player did not become ready on the TV.";
+          showStatus(message);
+          sendStatus("ERROR", message);
+        }, 20000);
+
+        if (youtubePlayer) {
+          showStatus("Starting YouTube playback…");
+          youtubePlayer.loadVideoById(videoID);
+          return;
+        }
+
+        try {
+          youtubePlayer = new YT.Player("youtube-player", {
+            width: "100%",
+            height: "100%",
+            videoId: videoID,
+            playerVars: {
+              autoplay: 1,
+              controls: 1,
+              playsinline: 1,
+              origin: window.location.origin
+            },
+            events: {
+              onReady: event => {
+                showStatus("Starting playback…");
+                clearTimeout(playbackStartTimeout);
+                playbackStartTimeout = setTimeout(() => {
+                  const message = "YouTube did not start playback. Press Play on the TV, or the video may block embedded playback.";
+                  showStatus(message);
+                  sendStatus("ERROR", message);
+                }, 20000);
+                event.target.playVideo();
+              },
+              onStateChange: event => {
+                if (event.data === YT.PlayerState.PLAYING) {
+                  clearTimeout(playbackStartTimeout);
+                  statusElement.hidden = true;
+                  sendStatus("PLAYING");
+                } else if (event.data === YT.PlayerState.PAUSED) {
+                  clearTimeout(playbackStartTimeout);
+                  showStatus("YouTube playback paused");
+                } else if (event.data === YT.PlayerState.ENDED) {
+                  clearTimeout(playbackStartTimeout);
+                  showStatus("YouTube video ended");
+                }
+              },
+              onError: event => {
+                clearTimeout(playbackStartTimeout);
+                const message = `YouTube player error (${event.data}). The video may not allow embedded playback.`;
+                showStatus(message);
+                sendStatus("ERROR", message);
+              }
+            }
+          });
+        } catch (error) {
+          clearTimeout(playbackStartTimeout);
+          const message = `Couldn't create the YouTube player: ${error.message}`;
+          showStatus(message);
+          sendStatus("ERROR", message);
+        }
+      }
+
+      window.onYouTubeIframeAPIReady = () => {
+        if (pendingVideoID) playYouTubeVideo(pendingVideoID, activeSenderID);
+      };
+
+      context.addCustomMessageListener(namespace, event => {
+        activeSenderID = event.senderId;
+        let message = event.data;
+        if (typeof message === "string") {
+          try {
+            message = JSON.parse(message);
+          } catch {
+            sendStatus("ERROR", "The Cast request was not valid JSON.");
+            return;
+          }
+        }
+
+        if (message && ["PLAY", "PAUSE", "STOP", "SEEK"].includes(message.type)) {
+          handlePlaybackCommand(message);
+          return;
+        }
+
+        if (!message || message.type !== "LOAD_YOUTUBE" ||
+            typeof message.videoId !== "string" ||
+            !/^[A-Za-z0-9_-]{11}$/.test(message.videoId)) {
+          if (message && message.type === "PING") {
+            sendStatus("READY");
+            return;
+          }
+          sendStatus("ERROR", "The Cast request did not contain a valid YouTube video ID.");
+          return;
+        }
+
+        playYouTubeVideo(message.videoId, event.senderId);
+      });
+
+      playerManager.setMessageInterceptor(
+        cast.framework.messages.MessageType.LOAD,
+        loadRequest => {
+          playerElement.hidden = true;
+          if (youtubePlayer) youtubePlayer.stopVideo();
+          pendingVideoID = undefined;
+          currentVideoID = undefined;
+          activeSenderID = undefined;
+          return loadRequest;
+        }
+      );
+
+      const iframeAPIScript = document.createElement("script");
+      iframeAPIScript.src = "https://www.youtube.com/iframe_api";
+      iframeAPIScript.onerror = () => {
+        const message = "The TV could not load YouTube's player API. Check its internet connection.";
+        showStatus(message);
+        sendStatus("ERROR", message);
+      };
+      document.head.appendChild(iframeAPIScript);
+      setInterval(reportPlayerState, 1000);
+      // YouTube plays in an iframe, not a CAF media session, so the receiver would
+      // otherwise look idle and be shut down by the Cast idle timeout (~5 minutes).
+      const options = new cast.framework.CastReceiverOptions();
+      options.disableIdleTimeout = true;
+      options.maxInactivity = 3600;
+      context.start(options);
+    })();
+  </script>
+</body>
+</html>
