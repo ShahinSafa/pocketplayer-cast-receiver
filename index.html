@@ -283,6 +283,29 @@
       document.head.appendChild(iframeAPIScript);
       setInterval(reportPlayerState, 1000);
 
+      // On many TVs the remote's media keys arrive as Cast framework commands, not keyboard events.
+      // Route them to the YouTube player when a YouTube video is active.
+      const frameworkCommands = {
+        PLAY: () => youtubePlayer.playVideo(),
+        PAUSE: () => youtubePlayer.pauseVideo(),
+        STOP: () => youtubePlayer.stopVideo(),
+        SEEK: request => {
+          const position = typeof request.currentTime === "number" ? request.currentTime :
+            youtubePlayer.getCurrentTime() + (request.relativeTime || 0);
+          youtubePlayer.seekTo(Math.max(0, position), true);
+        }
+      };
+      Object.keys(frameworkCommands).forEach(name => {
+        playerManager.setMessageInterceptor(cast.framework.messages.MessageType[name], request => {
+          if (youtubePlayer && currentVideoID && typeof youtubePlayer.getPlayerState === "function") {
+            frameworkCommands[name](request);
+            reportPlayerState();
+            return null;
+          }
+          return request;
+        });
+      });
+
       // TV remote support: media keys and the d-pad control the YouTube player directly.
       // The phone follows along because the receiver reports its state every second.
       document.addEventListener("keydown", event => {
