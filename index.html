@@ -282,6 +282,50 @@
       };
       document.head.appendChild(iframeAPIScript);
       setInterval(reportPlayerState, 1000);
+
+      // TV remote support: media keys and the d-pad control the YouTube player directly.
+      // The phone follows along because the receiver reports its state every second.
+      document.addEventListener("keydown", event => {
+        if (!youtubePlayer || !window.YT || typeof youtubePlayer.getPlayerState !== "function") return;
+        const skip = 10;
+        const state = youtubePlayer.getPlayerState();
+        const isPlaying = state === YT.PlayerState.PLAYING || state === YT.PlayerState.BUFFERING;
+        const seekBy = delta => {
+          const duration = youtubePlayer.getDuration() || Infinity;
+          youtubePlayer.seekTo(Math.min(Math.max(0, youtubePlayer.getCurrentTime() + delta), duration), true);
+        };
+
+        switch (event.key) {
+        case "MediaPlayPause":
+        case "Enter":
+        case " ":
+          if (isPlaying) youtubePlayer.pauseVideo(); else youtubePlayer.playVideo();
+          break;
+        case "MediaPlay":
+          youtubePlayer.playVideo();
+          break;
+        case "MediaPause":
+          youtubePlayer.pauseVideo();
+          break;
+        case "MediaStop":
+          youtubePlayer.stopVideo();
+          break;
+        case "MediaFastForward":
+        case "MediaTrackNext":
+        case "ArrowRight":
+          seekBy(skip);
+          break;
+        case "MediaRewind":
+        case "MediaTrackPrevious":
+        case "ArrowLeft":
+          seekBy(-skip);
+          break;
+        default:
+          return;
+        }
+        event.preventDefault();
+        reportPlayerState();
+      });
       // YouTube plays in an iframe, not a CAF media session, so the receiver would
       // otherwise look idle and be shut down by the Cast idle timeout (~5 minutes).
       const options = new cast.framework.CastReceiverOptions();
