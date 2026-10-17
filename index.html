@@ -76,8 +76,8 @@
           currentTime: youtubePlayer.getCurrentTime() || 0,
           duration: youtubePlayer.getDuration() || 0,
           quality: youtubePlayer.getPlaybackQuality ? youtubePlayer.getPlaybackQuality() : "",
-          screenWidth: window.innerWidth,
-          screenHeight: window.innerHeight
+          screenWidth: Math.round(window.innerWidth * (window.devicePixelRatio || 1)),
+          screenHeight: Math.round(window.innerHeight * (window.devicePixelRatio || 1))
         });
       }
 
